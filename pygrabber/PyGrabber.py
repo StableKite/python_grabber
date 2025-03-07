@@ -29,7 +29,7 @@
 
 from typing import Callable
 
-from pygrabber.dshow_graph import FilterGraph, Mat, StateGraph
+from .dshow_graph import FilterGraph, Mat, StateGraph
 
 
 class PyGrabber:

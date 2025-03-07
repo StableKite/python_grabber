@@ -31,7 +31,7 @@ from ctypes.wintypes import BOOL, DWORD, WORD
 
 from comtypes import COMMETHOD, GUID, HRESULT, IUnknown
 
-from pygrabber.win_common_types import REFGUID
+from .win_common_types import REFGUID
 
 LPCWSTR_WMSDK_TYPE_SAFE = POINTER(c_wchar)
 

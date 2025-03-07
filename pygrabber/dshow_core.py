@@ -35,8 +35,8 @@ from ctypes.wintypes import DWORD, LONG, LPCOLESTR, LPOLESTR, RECT, SIZE, ULONG,
 from comtypes import BSTR, COMMETHOD, GUID, IUnknown, client
 from comtypes.automation import IDispatch
 
-from pygrabber.moniker import IEnumMoniker
-from pygrabber.win_common_types import DWORDLONG, LONG_PTR, OLE_HANDLE, REFERENCE_TIME, REFIID
+from .moniker import IEnumMoniker
+from .win_common_types import DWORDLONG, LONG_PTR, OLE_HANDLE, REFERENCE_TIME, REFIID
 
 qedit = client.GetModule('qedit.dll')
 quartz = client.GetModule('quartz.dll')
@@ -91,7 +91,7 @@ class VIDEO_STREAM_CONFIG_CAPS(Structure):
         ('MinOutputSize', SIZE),
         ('MaxOutputSize', SIZE),
         ('OutputGranularityX', c_int),
-        ('OutputGranularityX', c_int),
+        ('OutputGranularityY', c_int),
         ('StretchTapsX', c_int),
         ('StretchTapsY', c_int),
         ('ShrinkTapsX', c_int),
@@ -321,6 +321,28 @@ IVideoWindow._methods_ = [
 
     COMMETHOD([], HRESULT, 'IsCursorHidden',
               (['out'], POINTER(c_long), 'CursorHidden'))
+]
+
+
+class IAMVideoControl(IUnknown):
+    _case_insensitive_ = True
+    _iid_ = GUID('{6a2e0670-28e4-11d0-a18c-00a0c9118956}')
+    _idlflags_ = []
+
+
+IAMVideoControl._methods_ = [
+    COMMETHOD([], HRESULT, 'GetCaps',
+              (['in'], POINTER(qedit.IPin), 'pPin'),
+              (['out'], POINTER(c_long), 'pCapsFlags')),
+    COMMETHOD([], HRESULT, 'GetCurrentActualFrameRate',
+              (['in'], POINTER(qedit.IPin), 'pPin'),
+              (['out'], POINTER(REFERENCE_TIME), 'ActualFrameRate')),
+    COMMETHOD([], HRESULT, 'GetFrameRateList',
+              (['in'], POINTER(qedit.IPin), 'pPin'),
+              (['in'], c_long, 'iIndex'),
+              (['in'], SIZE, 'Dimensions'),
+              (['out'], POINTER(POINTER(c_longlong)), 'FrameRateArray'),
+              (['out'], POINTER(c_long), 'FrameRateArraySize'))
 ]
 
 

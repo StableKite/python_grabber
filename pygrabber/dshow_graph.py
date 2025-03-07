@@ -30,8 +30,8 @@ from __future__ import annotations
 
 import os.path
 from collections.abc import Callable
-from ctypes import POINTER, byref, cast, create_unicode_buffer, pointer, windll, wstring_at
-from ctypes.wintypes import DWORD
+from ctypes import POINTER, byref, cast, create_unicode_buffer, pointer, windll, wstring_at, c_longlong, c_long
+from ctypes.wintypes import DWORD, SIZE
 from enum import Enum
 from typing import Literal, TypedDict, Union, cast as type_cast
 
@@ -40,13 +40,13 @@ import numpy.typing as npt
 from comtypes import GUID, COMError, COMObject, client
 from comtypes.persist import IPropertyBag
 
-from pygrabber.dshow_core import (IBASEFILTER, ICAPTUREGRAPHBUILDER2, IFILTERGRAPH, IPIN, PIN_OUT, VIDEOINFOHEADER,
-                                  IAMStreamConfig, ICaptureGraphBuilder2, ICreateDevEnum, ISampleGrabber,
-                                  ISpecifyPropertyPages, IVideoWindow, qedit, quartz)
-from pygrabber.dshow_ids import DeviceCategories, MediaSubtypes, MediaTypes, PinCategory, clsids, FormatTypes, subtypes
-from pygrabber.moniker import IMONIKER
-from pygrabber.win_api_extra import LPUNKNOWN, WS_CHILD, WS_CLIPSIBLINGS, OleCreatePropertyFrame
-from pygrabber.windows_media import IWMPROFILE, IWMProfileManager2, WMCreateProfileManager
+from .dshow_core import (IBASEFILTER, ICAPTUREGRAPHBUILDER2, IFILTERGRAPH, IPIN, PIN_OUT, VIDEO_STREAM_CONFIG_CAPS, VIDEOINFOHEADER,
+                            IAMStreamConfig, IAMVideoControl, ICaptureGraphBuilder2, ICreateDevEnum, ISampleGrabber,
+                            ISpecifyPropertyPages, IVideoWindow, qedit, quartz)
+from .dshow_ids import DeviceCategories, MediaSubtypes, MediaTypes, PinCategory, clsids, FormatTypes, subtypes
+from .moniker import IMONIKER
+from .win_api_extra import LPUNKNOWN, WS_CHILD, WS_CLIPSIBLINGS, OleCreatePropertyFrame
+from .windows_media import IWMPROFILE, IWMProfileManager2, WMCreateProfileManager
 
 Mat = np.ndarray[int, np.dtype[np.generic]]
 
@@ -127,11 +127,66 @@ class Filter:
             pin, count = enum.Next(1)
 
 
+class FrameRateManager:
+    def __init__(self, pin: IPIN):
+        self.pin = pin
+        self.stream_config = pin.QueryInterface(IAMStreamConfig)
+        try:
+            self.video_control = pin.QueryInterface(IAMVideoControl)
+        except COMError:
+            self.video_control = None
+
+    def get_available_fps(self, format_index: int) -> list[float]:
+        """Получение точных FPS для формата"""
+        media_type, caps = self._get_stream_caps(format_index)
+        return self._calculate_fps(caps) if self.video_control is None else self._get_exact_fps(format_index, media_type)
+
+    def _get_stream_caps(self, index: int):
+        media_type, caps = self.stream_config.GetStreamCaps(index)
+        return media_type, caps
+
+    def _calculate_fps(self, caps: VIDEO_STREAM_CONFIG_CAPS) -> list[float]:
+        if caps.MinFrameInterval == caps.MaxFrameInterval:
+            return [round(10**7 / caps.MinFrameInterval, 2)]
+        
+        step = caps.OutputGranularityX * 100000  # Шаг в 100ns
+        return [
+            round(10**7 / interval, 2)
+            for interval in range(
+                caps.MinFrameInterval,
+                caps.MaxFrameInterval + step,
+                step
+            )
+        ]
+
+    def _get_exact_fps(self, index: int, media_type) -> list[float]:
+        p_list = POINTER(c_longlong)()
+        size = c_long()
+        
+        hr = self.video_control.GetFrameRateList(
+            self.pin, 
+            index, 
+            SIZE(
+                media_type.contents.pbFormat.bmiHeader.biWidth,
+                abs(media_type.contents.pbFormat.bmiHeader.biHeight)
+            ),
+            byref(p_list),
+            byref(size)
+        )
+        
+        if hr != 0 or size.value == 0:
+            return []
+        
+        fps_array = cast(p_list, POINTER(c_longlong * size.value)).contents
+        return [round(10**7 / value, 2) for value in fps_array]
+
+
 class FormatTypedDict(TypedDict):
     index: int
     media_type_str: str
     width: int
     height: int
+    exact_fps: list[float]
     min_framerate: float
     max_framerate: float
 
@@ -151,6 +206,7 @@ class VideoInput(Filter):
         # https://docs.microsoft.com/en-us/windows/win32/directshow/configure-the-video-output-format
         stream_config = self.get_out().QueryInterface(IAMStreamConfig)
         media_types_count, _ = stream_config.GetNumberOfCapabilities()
+        fps_manager = FrameRateManager(self.get_out())
         result: list[FormatTypedDict] = []
         for i in range(0, media_types_count):
             media_type, capability = stream_config.GetStreamCaps(i)
@@ -162,8 +218,9 @@ class VideoInput(Filter):
                     'media_type_str': subtypes[str(media_type.contents.subtype)],
                     'width': bmp_header.biWidth,
                     'height': bmp_header.biHeight,
-                    'min_framerate': 10000000 / capability.MinFrameInterval,
-                    'max_framerate': 10000000 / capability.MaxFrameInterval
+                    'exact_fps': fps_manager.get_available_fps(i),
+                    'min_framerate': 10000000 / capability.MaxFrameInterval,
+                    'max_framerate': 10000000 / capability.MinFrameInterval
                 })
             # print(f"{capability.MinOutputSize.cx}x{capability.MinOutputSize.cx} - {capability.MaxOutputSize.cx}x{capability.MaxOutputSize.cx}")
         return result
