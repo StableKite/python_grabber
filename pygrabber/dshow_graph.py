@@ -195,12 +195,42 @@ class VideoInput(Filter):
     def __init__(self, args: tuple[IBASEFILTER, str], capture_builder: ICAPTUREGRAPHBUILDER2):
         Filter.__init__(self, args[0], args[1], capture_builder)
 
-    def get_current_format(self) -> tuple[int, int]:
+    def get_current_format_index(self) -> int:
+        stream_config = self.get_out().QueryInterface(IAMStreamConfig)
+        current_media_type = stream_config.GetFormat()
+        p_video_info_header = cast(current_media_type.contents.pbFormat, POINTER(VIDEOINFOHEADER))
+        current_bmp_header = p_video_info_header.contents.bmi_header
+        media_types_count, _ = stream_config.GetNumberOfCapabilities()
+        for i in range(media_types_count):
+            media_type, _ = stream_config.GetStreamCaps(i) 
+            if GUID(FormatTypes.FORMAT_VideoInfo) == media_type.contents.formattype: 
+                p_available_info_header = cast(media_type.contents.pbFormat, POINTER(VIDEOINFOHEADER)) 
+                available_bmp_header = p_available_info_header.contents.bmi_header 
+            if (available_bmp_header.biWidth == current_bmp_header.biWidth and 
+                available_bmp_header.biHeight == current_bmp_header.biHeight and 
+                available_bmp_header.biCompression == current_bmp_header.biCompression and 
+                available_bmp_header.biBitCount == current_bmp_header.biBitCount): 
+                return i # Matching format found 
+        return -1 # Format not found
+
+    def get_current_format(self):
+        stream_config = self.get_out().QueryInterface(IAMStreamConfig)
+        current_format_index = self.get_current_format_index()
+        media_type = stream_config.GetStreamCaps(current_format_index)[0]
+        p_video_info_header = cast(media_type.contents.pbFormat, POINTER(VIDEOINFOHEADER))
+        bmp_header = p_video_info_header.contents.bmi_header
         stream_config = self.get_out().QueryInterface(IAMStreamConfig)
         media_type = stream_config.GetFormat()
         p_video_info_header = cast(media_type.contents.pbFormat, POINTER(VIDEOINFOHEADER))
-        bmp_header = p_video_info_header.contents.bmi_header
-        return bmp_header.biWidth, bmp_header.biHeight
+        avg_time_per_frame = p_video_info_header.contents.avg_time_per_frame
+        fps = 10000000.0 / avg_time_per_frame if avg_time_per_frame > 0 else 0.
+        return {
+            'index': current_format_index,
+            'media_type_str': subtypes[str(media_type.contents.subtype)],
+            'width': bmp_header.biWidth,
+            'height': bmp_header.biHeight,
+            'fps': fps
+        }
 
     def get_formats(self):
         # https://docs.microsoft.com/en-us/windows/win32/directshow/configure-the-video-output-format
