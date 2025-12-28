@@ -307,7 +307,7 @@ class SampleGrabber(Filter):
         self.sample_grabber = self.instance.QueryInterface(ISampleGrabber)
         self.callback: SampleGrabberCallback = None
 
-    def set_callback(self, callback: SampleGrabberCallback, which_method_to_callback):
+    def set_callback(self, callback: SampleGrabberCallback, which_method_to_callback: int):
         self.callback = callback
         self.sample_grabber.SetCallback(callback, which_method_to_callback)
 
