@@ -1,0 +1,425 @@
+name: Build and publish to devpi
+
+on:
+  push:
+    branches:
+      - master
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  DEVPI_SERVER: https://stablekite.com:4438/
+  DEVPI_TARGET_INDEX: https://stablekite.com:4438/StableKite/index/
+
+jobs:
+  build:
+    name: Windows x86_64 / Python 3.14t
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Set up Python 3.14t
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.14t"
+
+      - name: Install build tools
+        run: python -m pip install --upgrade build wheel
+
+      - name: Compile Python sources
+        run: python -m compileall -q pygrabber
+
+      - name: Build wheel and source distribution
+        run: python -m build --wheel --sdist --outdir dist
+
+      - name: Verify initial distributions
+        shell: pwsh
+        run: |
+          @'
+          from email.parser import BytesParser
+          from email.policy import default
+          from pathlib import Path
+          import tarfile
+          import zipfile
+
+          dist = Path("dist")
+          wheels = list(dist.glob("*.whl"))
+          sdists = list(dist.glob("*.tar.gz"))
+
+          if len(wheels) != 1:
+              raise SystemExit(f"Expected exactly one wheel, got: {wheels}")
+          if len(sdists) != 1:
+              raise SystemExit(f"Expected exactly one sdist, got: {sdists}")
+
+          wheel = wheels[0]
+          sdist = sdists[0]
+
+          if wheel.name != "pygrabber-0.2.2-py3-none-any.whl":
+              raise SystemExit(f"Unexpected wheel filename: {wheel.name}")
+
+          required_package_files = {
+              "pygrabber/PyGrabber.py",
+              "pygrabber/__init__.py",
+              "pygrabber/dshow_core.py",
+              "pygrabber/dshow_graph.py",
+              "pygrabber/dshow_ids.py",
+              "pygrabber/moniker.py",
+              "pygrabber/py.typed",
+              "pygrabber/win_api_extra.py",
+              "pygrabber/win_common_types.py",
+              "pygrabber/windows_media.py",
+          }
+
+          with zipfile.ZipFile(wheel) as archive:
+              bad = archive.testzip()
+              if bad is not None:
+                  raise SystemExit(f"Corrupt wheel member: {bad}")
+
+              names = set(archive.namelist())
+              missing = sorted(required_package_files - names)
+              if missing:
+                  raise SystemExit(f"Wheel is missing files: {missing}")
+
+              wheel_metadata_name = next(
+                  name for name in names
+                  if name.endswith(".dist-info/WHEEL")
+              )
+              package_metadata_name = next(
+                  name for name in names
+                  if name.endswith(".dist-info/METADATA")
+              )
+
+              wheel_metadata = archive.read(
+                  wheel_metadata_name
+              ).decode("utf-8")
+
+              if "Root-Is-Purelib: true" not in wheel_metadata:
+                  raise SystemExit("Wheel is not marked as pure Python")
+              if "Tag: py3-none-any" not in wheel_metadata:
+                  raise SystemExit(
+                      "Initial wheel does not contain py3-none-any tag"
+                  )
+
+              metadata = BytesParser(policy=default).parsebytes(
+                  archive.read(package_metadata_name)
+              )
+
+              if metadata["Name"].lower() != "pygrabber":
+                  raise SystemExit(
+                      f"Unexpected package name: {metadata['Name']!r}"
+                  )
+              if metadata["Version"] != "0.2.2":
+                  raise SystemExit(
+                      f"Unexpected package version: {metadata['Version']!r}"
+                  )
+
+              requirements = metadata.get_all("Requires-Dist", [])
+              normalized = {
+                  requirement.replace(" ", "").lower()
+                  for requirement in requirements
+              }
+
+              if not any(
+                  requirement.startswith("comtypes>=1.1.7")
+                  for requirement in normalized
+              ):
+                  raise SystemExit(
+                      f"Missing comtypes dependency: {requirements!r}"
+                  )
+
+              if not any(
+                  requirement.startswith("numpy>=1.17.3")
+                  for requirement in normalized
+              ):
+                  raise SystemExit(
+                      f"Missing numpy dependency: {requirements!r}"
+                  )
+
+          with tarfile.open(sdist, "r:gz") as archive:
+              names = archive.getnames()
+
+          required_sdist_suffixes = (
+              "/setup.py",
+              "/README.md",
+              "/LICENSE",
+              "/pygrabber/PyGrabber.py",
+              "/pygrabber/__init__.py",
+              "/pygrabber/dshow_core.py",
+              "/pygrabber/dshow_graph.py",
+              "/pygrabber/dshow_ids.py",
+              "/pygrabber/moniker.py",
+              "/pygrabber/py.typed",
+              "/pygrabber/win_api_extra.py",
+              "/pygrabber/win_common_types.py",
+              "/pygrabber/windows_media.py",
+          )
+
+          for suffix in required_sdist_suffixes:
+              if not any(name.endswith(suffix) for name in names):
+                  raise SystemExit(
+                      f"Source distribution is missing: {suffix}"
+                  )
+
+          print(f"Initial wheel OK: {wheel.name}")
+          print(f"Source distribution OK: {sdist.name}")
+          '@ | python -
+
+      - name: Verify sdist can rebuild a wheel
+        shell: pwsh
+        run: |
+          Remove-Item -Recurse -Force "sdist-check" -ErrorAction SilentlyContinue
+          Remove-Item -Recurse -Force "rebuilt-wheel" -ErrorAction SilentlyContinue
+          New-Item -ItemType Directory -Path "sdist-check" | Out-Null
+          New-Item -ItemType Directory -Path "rebuilt-wheel" | Out-Null
+
+          tar -xzf "dist/pygrabber-0.2.2.tar.gz" -C "sdist-check"
+
+          $roots = @(Get-ChildItem -Path "sdist-check" -Directory)
+          if ($roots.Count -ne 1) {
+            throw "Expected exactly one sdist root directory."
+          }
+
+          python -m build `
+            --wheel `
+            --outdir "rebuilt-wheel" `
+            "$($roots[0].FullName)"
+
+          $rebuilt = @(Get-ChildItem -Path "rebuilt-wheel" -Filter "*.whl")
+          if ($rebuilt.Count -ne 1) {
+            throw "Expected exactly one wheel rebuilt from sdist."
+          }
+
+          if ($rebuilt[0].Name -ne "pygrabber-0.2.2-py3-none-any.whl") {
+            throw "Unexpected rebuilt wheel: $($rebuilt[0].Name)"
+          }
+
+          Write-Host "Successfully rebuilt from sdist: $($rebuilt[0].Name)"
+
+      - name: Retag wheel for Windows x86_64
+        shell: pwsh
+        run: |
+          $wheels = @(Get-ChildItem -Path "dist" -Filter "*.whl")
+          if ($wheels.Count -ne 1) {
+            throw "Expected exactly one wheel, found $($wheels.Count)"
+          }
+
+          python -m wheel tags `
+            --remove `
+            --platform-tag win_amd64 `
+            "$($wheels[0].FullName)"
+
+          $retagged = @(Get-ChildItem -Path "dist" -Filter "*.whl")
+          if ($retagged.Count -ne 1) {
+            throw "Expected exactly one retagged wheel, found $($retagged.Count)"
+          }
+
+          if ($retagged[0].Name -ne "pygrabber-0.2.2-py3-none-win_amd64.whl") {
+            throw "Unexpected wheel tag: $($retagged[0].Name)"
+          }
+
+          Write-Host "Retagged wheel: $($retagged[0].Name)"
+
+      - name: Install wheel with runtime dependencies
+        shell: pwsh
+        run: |
+          $wheels = @(Get-ChildItem -Path "dist" -Filter "*.whl")
+          if ($wheels.Count -ne 1) {
+            throw "Expected exactly one wheel, found $($wheels.Count)"
+          }
+
+          python -m pip install `
+            --force-reinstall `
+            "$($wheels[0].FullName)"
+
+      - name: Smoke-test DirectShow imports
+        shell: pwsh
+        run: |
+          @'
+          import sysconfig
+
+          assert sysconfig.get_config_var("Py_GIL_DISABLED") == 1
+
+          import comtypes
+          import numpy
+          import pygrabber
+
+          from pygrabber.PyGrabber import PyGrabber
+          from pygrabber.dshow_graph import RecordingFormat, StateGraph
+
+          assert StateGraph.Stopped.value == 0
+          assert StateGraph.Paused.value == 1
+          assert StateGraph.Running.value == 2
+          assert RecordingFormat.AVI.value == 0
+          assert RecordingFormat.ASF.value == 1
+          assert callable(PyGrabber)
+
+          print("pygrabber DirectShow import smoke-test OK")
+          print("pygrabber:", pygrabber.__file__)
+          print("comtypes:", comtypes.__version__)
+          print("numpy:", numpy.__version__)
+          '@ | python -
+
+      - name: Verify final wheel metadata
+        shell: pwsh
+        run: |
+          @'
+          from pathlib import Path
+          import zipfile
+
+          wheels = list(Path("dist").glob("*.whl"))
+          if len(wheels) != 1:
+              raise SystemExit(
+                  f"Expected exactly one final wheel, got: {wheels}"
+              )
+
+          wheel = wheels[0]
+
+          if wheel.name != "pygrabber-0.2.2-py3-none-win_amd64.whl":
+              raise SystemExit(
+                  f"Unexpected final wheel filename: {wheel.name}"
+              )
+
+          with zipfile.ZipFile(wheel) as archive:
+              bad = archive.testzip()
+              if bad is not None:
+                  raise SystemExit(f"Corrupt wheel member: {bad}")
+
+              wheel_metadata_name = next(
+                  name for name in archive.namelist()
+                  if name.endswith(".dist-info/WHEEL")
+              )
+              wheel_metadata = archive.read(
+                  wheel_metadata_name
+              ).decode("utf-8")
+
+          if "Tag: py3-none-win_amd64" not in wheel_metadata:
+              raise SystemExit(
+                  "Final wheel metadata does not contain "
+                  "py3-none-win_amd64 tag"
+              )
+
+          print(f"Final wheel OK: {wheel.name}")
+          '@ | python -
+
+      - name: Upload distributions
+        uses: actions/upload-artifact@v7
+        with:
+          name: distributions
+          path: |
+            dist/*.whl
+            dist/*.tar.gz
+          if-no-files-found: error
+
+  publish:
+    name: Publish to devpi
+    needs: build
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Download distributions
+        uses: actions/download-artifact@v8
+        with:
+          name: distributions
+          path: dist
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.14"
+
+      - name: Verify downloaded artifacts
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import tarfile
+          import zipfile
+
+          dist = Path("dist")
+          wheels = list(dist.glob("*.whl"))
+          sdists = list(dist.glob("*.tar.gz"))
+
+          if len(wheels) != 1:
+              raise SystemExit(
+                  f"Expected exactly one wheel, got: {wheels}"
+              )
+          if len(sdists) != 1:
+              raise SystemExit(
+                  f"Expected exactly one sdist, got: {sdists}"
+              )
+
+          wheel = wheels[0]
+          sdist = sdists[0]
+
+          if wheel.name != "pygrabber-0.2.2-py3-none-win_amd64.whl":
+              raise SystemExit(
+                  f"Unexpected wheel filename: {wheel.name}"
+              )
+          if sdist.name != "pygrabber-0.2.2.tar.gz":
+              raise SystemExit(
+                  f"Unexpected sdist filename: {sdist.name}"
+              )
+
+          with zipfile.ZipFile(wheel) as archive:
+              bad = archive.testzip()
+              if bad is not None:
+                  raise SystemExit(
+                      f"Corrupt wheel member: {bad}"
+                  )
+
+              wheel_metadata_name = next(
+                  name for name in archive.namelist()
+                  if name.endswith(".dist-info/WHEEL")
+              )
+              wheel_metadata = archive.read(
+                  wheel_metadata_name
+              ).decode("utf-8")
+
+          if "Tag: py3-none-win_amd64" not in wheel_metadata:
+              raise SystemExit(
+                  "Wheel metadata does not contain "
+                  "py3-none-win_amd64 tag"
+              )
+
+          with tarfile.open(sdist, "r:gz") as archive:
+              archive.getmembers()
+
+          print("Ready to publish:")
+          print(f"  {wheel.name} ({wheel.stat().st_size} bytes)")
+          print(f"  {sdist.name} ({sdist.stat().st_size} bytes)")
+          PY
+
+      - name: Install devpi tools
+        run: >-
+          python -m pip install
+          devpi-client
+          devpi-tokens
+          "pypitoken>=6.0.1"
+
+      - name: Publish
+        env:
+          DEVPI_TOKEN: ${{ secrets.DEVPI_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ -z "${DEVPI_TOKEN:-}" ]; then
+            echo "::error::DEVPI_TOKEN is not available to this repository."
+            exit 1
+          fi
+
+          TOKEN_FILE="$RUNNER_TEMP/devpi-token"
+          printf '%s' "$DEVPI_TOKEN" > "$TOKEN_FILE"
+          chmod 600 "$TOKEN_FILE"
+          trap 'rm -f "$TOKEN_FILE"' EXIT
+
+          devpi use "$DEVPI_SERVER"
+          devpi token-login -f "$TOKEN_FILE"
+          devpi use "$DEVPI_TARGET_INDEX"
+          devpi upload dist/*
