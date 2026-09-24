@@ -60,7 +60,7 @@ jobs:
           wheel = wheels[0]
           sdist = sdists[0]
 
-          if wheel.name != "pygrabber-0.2.2-py3-none-any.whl":
+          if wheel.name != "pygrabber-0.2.3-py3-none-any.whl":
               raise SystemExit(f"Unexpected wheel filename: {wheel.name}")
 
           required_package_files = {
@@ -114,7 +114,7 @@ jobs:
                   raise SystemExit(
                       f"Unexpected package name: {metadata['Name']!r}"
                   )
-              if metadata["Version"] != "0.2.2":
+              if metadata["Version"] != "0.2.3":
                   raise SystemExit(
                       f"Unexpected package version: {metadata['Version']!r}"
                   )
@@ -178,7 +178,7 @@ jobs:
           New-Item -ItemType Directory -Path "sdist-check" | Out-Null
           New-Item -ItemType Directory -Path "rebuilt-wheel" | Out-Null
 
-          tar -xzf "dist/pygrabber-0.2.2.tar.gz" -C "sdist-check"
+          tar -xzf "dist/pygrabber-0.2.3.tar.gz" -C "sdist-check"
 
           $roots = @(Get-ChildItem -Path "sdist-check" -Directory)
           if ($roots.Count -ne 1) {
@@ -195,7 +195,7 @@ jobs:
             throw "Expected exactly one wheel rebuilt from sdist."
           }
 
-          if ($rebuilt[0].Name -ne "pygrabber-0.2.2-py3-none-any.whl") {
+          if ($rebuilt[0].Name -ne "pygrabber-0.2.3-py3-none-any.whl") {
             throw "Unexpected rebuilt wheel: $($rebuilt[0].Name)"
           }
 
@@ -219,7 +219,7 @@ jobs:
             throw "Expected exactly one retagged wheel, found $($retagged.Count)"
           }
 
-          if ($retagged[0].Name -ne "pygrabber-0.2.2-py3-none-win_amd64.whl") {
+          if ($retagged[0].Name -ne "pygrabber-0.2.3-py3-none-win_amd64.whl") {
             throw "Unexpected wheel tag: $($retagged[0].Name)"
           }
 
@@ -280,7 +280,7 @@ jobs:
 
           wheel = wheels[0]
 
-          if wheel.name != "pygrabber-0.2.2-py3-none-win_amd64.whl":
+          if wheel.name != "pygrabber-0.2.3-py3-none-win_amd64.whl":
               raise SystemExit(
                   f"Unexpected final wheel filename: {wheel.name}"
               )
@@ -357,11 +357,11 @@ jobs:
           wheel = wheels[0]
           sdist = sdists[0]
 
-          if wheel.name != "pygrabber-0.2.2-py3-none-win_amd64.whl":
+          if wheel.name != "pygrabber-0.2.3-py3-none-win_amd64.whl":
               raise SystemExit(
                   f"Unexpected wheel filename: {wheel.name}"
               )
-          if sdist.name != "pygrabber-0.2.2.tar.gz":
+          if sdist.name != "pygrabber-0.2.3.tar.gz":
               raise SystemExit(
                   f"Unexpected sdist filename: {sdist.name}"
               )
@@ -400,7 +400,6 @@ jobs:
           python -m pip install
           devpi-client
           devpi-tokens
-          "pypitoken>=6.0.1"
 
       - name: Publish
         env:
