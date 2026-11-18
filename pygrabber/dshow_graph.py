@@ -30,10 +30,10 @@ from __future__ import annotations
 
 import os.path
 from collections.abc import Callable
-from ctypes import POINTER, byref, cast, create_unicode_buffer, pointer, windll, wstring_at, c_longlong, c_long
+from ctypes import POINTER, byref, cast, create_unicode_buffer, pointer, windll, wstring_at, c_longlong, c_long, c_ubyte
 from ctypes.wintypes import DWORD, SIZE
 from enum import Enum
-from typing import Literal, TypedDict, Union, cast as type_cast
+from typing import TYPE_CHECKING, Literal, TypedDict, Union, cast as type_cast
 
 import numpy as np
 import numpy.typing as npt
@@ -191,6 +191,14 @@ class FormatTypedDict(TypedDict):
     max_framerate: float
 
 
+class CurrentFormatTypedDict(TypedDict):
+    index: int
+    media_type_str: str
+    width: int
+    height: int
+    fps: float
+
+
 class VideoInput(Filter):
     def __init__(self, args: tuple[IBASEFILTER, str], capture_builder: ICAPTUREGRAPHBUILDER2):
         Filter.__init__(self, args[0], args[1], capture_builder)
@@ -213,7 +221,7 @@ class VideoInput(Filter):
                 return i # Matching format found 
         return -1 # Format not found
 
-    def get_current_format(self):
+    def get_current_format(self) -> CurrentFormatTypedDict:
         stream_config = self.get_out().QueryInterface(IAMStreamConfig)
         current_format_index = self.get_current_format_index()
         media_type = stream_config.GetStreamCaps(current_format_index)[0]
@@ -232,7 +240,7 @@ class VideoInput(Filter):
             'fps': fps
         }
 
-    def get_formats(self):
+    def get_formats(self) -> list[FormatTypedDict]:
         # https://docs.microsoft.com/en-us/windows/win32/directshow/configure-the-video-output-format
         stream_config = self.get_out().QueryInterface(IAMStreamConfig)
         media_types_count, _ = stream_config.GetNumberOfCapabilities()
@@ -255,7 +263,7 @@ class VideoInput(Filter):
             # print(f"{capability.MinOutputSize.cx}x{capability.MinOutputSize.cx} - {capability.MaxOutputSize.cx}x{capability.MaxOutputSize.cx}")
         return result
 
-    def set_format(self, format_index: int):
+    def set_format(self, format_index: int) -> None:
         stream_config = self.get_out().QueryInterface(IAMStreamConfig)
         media_type, _ = stream_config.GetStreamCaps(format_index)
         stream_config.SetFormat(media_type)
@@ -307,7 +315,7 @@ class SampleGrabber(Filter):
         self.sample_grabber = self.instance.QueryInterface(ISampleGrabber)
         self.callback: SampleGrabberCallback = None
 
-    def set_callback(self, callback: SampleGrabberCallback, which_method_to_callback: int):
+    def set_callback(self, callback: SampleGrabberCallback, which_method_to_callback: int) -> None:
         self.callback = callback
         self.sample_grabber.SetCallback(callback, which_method_to_callback)
 
@@ -352,7 +360,7 @@ class SystemDeviceEnum:
     def __init__(self):
         self.system_device_enum = client.CreateObject(clsids.CLSID_SystemDeviceEnum, interface=ICreateDevEnum)
 
-    def get_available_filters(self, category_clsid: str):
+    def get_available_filters(self, category_clsid: str) -> list[str]:
         filter_enumerator = self.system_device_enum.CreateClassEnumerator(GUID(category_clsid), dwFlags=0)
         result: list[str] = []
         try:
@@ -429,7 +437,7 @@ class WmProfileManager:
 
 
 class FilterGraph:
-    def __init__(self):
+    def __init__(self) -> None:
         self.filter_graph = client.CreateObject(clsids.CLSID_FilterGraph, interface=qedit.IFilterGraph)
         self.graph_builder = self.filter_graph.QueryInterface(qedit.IGraphBuilder)
         self.media_control = self.filter_graph.QueryInterface(quartz.IMediaControl)
@@ -454,7 +462,7 @@ class FilterGraph:
         self.filters[filter_type] = filter
         self.filter_graph.AddFilter(filter.instance, filter.Name)
 
-    def add_video_input_device(self, index: int):
+    def add_video_input_device(self, index: int) -> None:
         self.__add_filter(FilterType.video_input, index)
 
     def add_audio_input_device(self, index: int):
@@ -466,7 +474,7 @@ class FilterGraph:
     def add_audio_compressor(self, index: int):
         self.__add_filter(FilterType.audio_compressor, index)
 
-    def add_sample_grabber(self, callback: Callable[[Mat], None]):
+    def add_sample_grabber(self, callback: Callable[[Mat], None]) -> None:
         self.__add_filter(FilterType.sample_grabber, None)
         sample_grabber = self.filters[FilterType.sample_grabber]
         sample_grabber_cb = SampleGrabberCallback(callback)
@@ -582,7 +590,7 @@ class FilterGraph:
     def get_state(self):
         return StateGraph(self.media_control.GetState(0xFFFFFFFF))  # 0xFFFFFFFF = infinite timeout
 
-    def get_input_devices(self):
+    def get_input_devices(self) -> list[str]:
         return self.system_device_enum.get_available_filters(DeviceCategories.VideoInputDevice)
 
     def get_audio_devices(self):
@@ -605,7 +613,7 @@ class FilterGraph:
             return False
 
     def get_input_device(self) -> VideoInput:
-        return self.filters[FilterType.video_input]
+        return type_cast(VideoInput, self.filters[FilterType.video_input])
 
     def remove_filters(self):
         enum_filters = self.filter_graph.EnumFilters()
@@ -678,24 +686,31 @@ class FilterGraphDebugHelper:
 
 NPBUFFER = Union[object, npt.ArrayLike]
 
+if TYPE_CHECKING:
+    from ctypes import _Pointer
+
+    BufferPointer = _Pointer[c_ubyte]
+else:
+    BufferPointer = POINTER(c_ubyte)
+
 
 class SampleGrabberCallback(COMObject):
     _com_interfaces_ = [qedit.ISampleGrabberCB]
 
-    def __init__(self, callback: Callable[[Mat], None]):
+    def __init__(self, callback: Callable[[Mat], None]) -> None:
         self.callback = callback
         self.cnt = 0
         self.keep_photo = False
         self.image_resolution: tuple[int, int] = (0, 0)
         super(SampleGrabberCallback, self).__init__()
 
-    def grab_frame(self):
+    def grab_frame(self) -> None:
         self.keep_photo = True
 
     def SampleCB(self, this, SampleTime, pSample) -> int:
         return 0
 
-    def BufferCB(self, this, SampleTime, pBuffer: NPBUFFER, BufferLen: int) -> int:
+    def BufferCB(self, this: int | None, SampleTime: float, pBuffer: BufferPointer, BufferLen: int) -> int:
         if self.keep_photo:
             self.keep_photo = False
             img = np.ctypeslib.as_array(pBuffer, shape=(self.image_resolution[1], self.image_resolution[0], 3))
